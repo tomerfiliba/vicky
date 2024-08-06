@@ -287,8 +287,9 @@ impl Shard {
         (guard, row)
     }
 
-    pub(crate) fn insert(
+    pub(crate) fn insert_unlocked(
         &self,
+        row: &mut ShardRow,
         ph: PartedHash,
         full_key: &[u8],
         val: &[u8],
@@ -309,11 +310,7 @@ impl Shard {
             }
         }
 
-        // maybe do the write before taking the row lock?
-
         // see if we replace an existing key
-        let (_guard, row) = self.get_row_mut(ph);
-
         match self.try_replace(row, ph, &full_key, val, mode)? {
             TryReplaceStatus::KeyDoesNotExist => {
                 if matches!(mode, InsertMode::Replace) {
@@ -340,6 +337,22 @@ impl Shard {
             }
             TryReplaceStatus::KeyExistsReplaced(existing) => Ok(InsertStatus::Replaced(existing)),
         }
+    }
+
+    pub(crate) fn insert(
+        &self,
+        ph: PartedHash,
+        full_key: &[u8],
+        val: &[u8],
+        mode: InsertMode,
+    ) -> Result<InsertStatus> {
+        let (_guard, row) = self.get_row_mut(ph);
+        self.insert_unlocked(row, ph, full_key, val, mode)
+    }
+
+    pub(crate) fn write_raw(&self, buf: &[u8], offset: u64) -> Result<()> {
+        self.file.write_all_at(buf, HEADER_SIZE + offset)?;
+        Ok(())
     }
 
     // this is NOT crash safe (may produce inconsistent results)
@@ -369,10 +382,7 @@ impl Shard {
                     }
                 }
 
-                self.file.write_all_at(
-                    patch,
-                    HEADER_SIZE + offset + klen as u64 + patch_offset as u64,
-                )?;
+                self.write_raw(patch, offset + klen as u64 + patch_offset as u64)?;
 
                 return Ok(true);
             }
@@ -399,5 +409,37 @@ impl Shard {
         }
 
         Ok(None)
+    }
+
+    pub(crate) fn operate_on_key<T>(
+        &self,
+        ph: PartedHash,
+        key: &[u8],
+        func: impl FnOnce(
+            &Shard,
+            &mut ShardRow,
+            PartedHash,
+            (usize, usize, u64),
+            Option<KVPair>,
+        ) -> Result<T>,
+    ) -> Result<T> {
+        let (_guard, row) = self.get_row_mut(ph);
+
+        let mut start = 0;
+        while let Some(idx) = row.signatures[start..].iter().position_simd(ph.signature) {
+            let (k, v) = self.read_kv(row.offsets_and_sizes[idx])?;
+            if key == k {
+                return func(
+                    &self,
+                    row,
+                    ph,
+                    Self::extract_offset_and_size(row.offsets_and_sizes[idx]),
+                    Some((k, v)),
+                );
+            }
+            start = idx + 1;
+        }
+
+        func(&self, row, ph, (0, 0, 0), None)
     }
 }

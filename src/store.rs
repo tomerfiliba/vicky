@@ -14,6 +14,8 @@ use crate::{Config, Result};
 
 pub(crate) const USER_NAMESPACE: &[u8] = &[1];
 pub(crate) const TYPED_NAMESPACE: &[u8] = &[2];
+pub(crate) const COLL_NAMESPACE: &[u8] = &[3];
+pub(crate) const COLLITEM_NAMESPACE: &[u8] = &[4];
 
 /// Stats from VickyStore, mainly useful for debugging
 #[derive(Debug, PartialEq, Eq, Clone)]
